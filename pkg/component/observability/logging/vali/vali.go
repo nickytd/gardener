@@ -8,7 +8,9 @@ import (
 	"bytes"
 	"context"
 	_ "embed"
+	"encoding/base64"
 	"fmt"
+	"github.com/gardener/gardener/pkg/controllerutils"
 	"text/template"
 
 	"github.com/Masterminds/sprig/v3"
@@ -169,6 +171,11 @@ func (v *vali) Deploy(ctx context.Context) error {
 		if err := kubeRBACProxyShootAccessSecret.Reconcile(ctx, v.client); err != nil {
 			return err
 		}
+		if kubeRBACProxyShootAccessSecret.Secret.Data == nil {
+			if err := initWithEmptyToken(ctx, v.client, kubeRBACProxyShootAccessSecret); err != nil {
+				return err
+			}
+		}
 
 		ingressTLSSecret, err := v.secretsManager.Generate(ctx, &secrets.CertificateSecretConfig{
 			Name:                        "vali-tls",
@@ -248,6 +255,21 @@ func (v *vali) Deploy(ctx context.Context) error {
 	}
 
 	return managedresources.CreateForSeedWithLabels(ctx, v.client, v.namespace, valiconstants.ManagedResourceNameRuntime, false, map[string]string{v1beta1constants.LabelCareConditionType: v1beta1constants.ObservabilityComponentsHealthy}, serializedObjects)
+}
+
+func initWithEmptyToken(ctx context.Context, c client.Client, secret *gardenerutils.AccessSecret) error {
+	if _, err := controllerutils.GetAndCreateOrMergePatch(ctx, c, secret.Secret, func() error {
+		data := []byte("empty token")
+		encodedData := make([]byte, base64.StdEncoding.EncodedLen(len(data)))
+		base64.StdEncoding.Encode(encodedData, data)
+		secret.Secret.Data = map[string][]byte{"token": encodedData}
+		return nil
+	},
+		controllerutils.MergeFromOption{MergeFromOption: client.MergeFromWithOptimisticLock{}},
+	); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (v *vali) Destroy(ctx context.Context) error {
