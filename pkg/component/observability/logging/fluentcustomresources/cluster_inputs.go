@@ -21,9 +21,10 @@ func GetClusterInputs(labels map[string]string) []*fluentbitv1alpha2.ClusterInpu
 			},
 			Spec: fluentbitv1alpha2.InputSpec{
 				Tail: &fluentbitv1alpha2input.Tail{
-					Tag:                    "kubernetes.*",
-					Path:                   "/var/log/containers/*.log",
-					ExcludePath:            "*_garden_fluent-bit-*.log,*_garden_vali-*.log",
+					Tag:  "kubernetes.*",
+					Path: "/var/log/containers/*.log",
+					ExcludePath: "*_kube-system_kube-proxy-*.log,*_garden_fluent-bit-*.log," +
+						"*_garden_vali-*.log",
 					RefreshIntervalSeconds: ptr.To[int64](10),
 					MemBufLimit:            "30MB",
 					SkipLongLines:          ptr.To(true),
