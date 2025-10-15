@@ -88,6 +88,9 @@ scrape_configs:
     - __meta_kubernetes_pod_label_gardener_cloud_role
     - __meta_kubernetes_pod_label_origin
     - __meta_kubernetes_pod_label_resources_gardener_cloud_managed_by
+  - action: drop
+    regex: ^kube-proxy$
+    source_labels: [ '__meta_kubernetes_pod_container_name' ]
   - action: replace
     regex: '.+'
     replacement: "gardener"
