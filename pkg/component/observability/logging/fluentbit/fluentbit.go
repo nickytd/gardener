@@ -299,8 +299,20 @@ func getLabels() map[string]string {
 		v1beta1constants.GardenRole:                           v1beta1constants.GardenRoleLogging,
 		v1beta1constants.LabelNetworkPolicyToDNS:              v1beta1constants.LabelNetworkPolicyAllowed,
 		v1beta1constants.LabelNetworkPolicyToRuntimeAPIServer: v1beta1constants.LabelNetworkPolicyAllowed,
-		gardenerutils.NetworkPolicyLabel(valiconstants.ServiceName, valiconstants.ValiPort): v1beta1constants.LabelNetworkPolicyAllowed,
-		"networking.resources.gardener.cloud/to-all-shoots-logging-tcp-3100":                v1beta1constants.LabelNetworkPolicyAllowed,
+	}
+	return utils.MergeStringMaps(labels, getTargetNetworkPolicyLabels())
+}
+
+func getTargetNetworkPolicyLabels() map[string]string {
+	if !features.DefaultFeatureGate.Enabled(features.OpenTelemetryCollector) {
+		return map[string]string{
+			gardenerutils.NetworkPolicyLabel(valiconstants.ServiceName, valiconstants.ValiPort): v1beta1constants.LabelNetworkPolicyAllowed,
+			"networking.resources.gardener.cloud/to-all-shoots-logging-tcp-3100":                v1beta1constants.LabelNetworkPolicyAllowed,
+		}
+	}
+	return map[string]string{
+		gardenerutils.NetworkPolicyLabel("opentelemetry-collector-collector", 4317):                    v1beta1constants.LabelNetworkPolicyAllowed,
+		"networking.resources.gardener.cloud/to-all-shoots-opentelemetry-collector-collector-tcp-4317": v1beta1constants.LabelNetworkPolicyAllowed,
 	}
 }
 
