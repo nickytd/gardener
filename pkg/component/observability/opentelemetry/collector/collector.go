@@ -21,12 +21,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	"github.com/gardener/gardener/pkg/apis/resources/v1alpha1"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	"github.com/gardener/gardener/pkg/component"
 	valiconstants "github.com/gardener/gardener/pkg/component/observability/logging/vali/constants"
 	"github.com/gardener/gardener/pkg/component/observability/monitoring/prometheus/shoot"
 	monitoringutils "github.com/gardener/gardener/pkg/component/observability/monitoring/utils"
 	collectorconstants "github.com/gardener/gardener/pkg/component/observability/opentelemetry/collector/constants"
+	"github.com/gardener/gardener/pkg/utils"
 	gardenerutils "github.com/gardener/gardener/pkg/utils/gardener"
 	kubernetesutils "github.com/gardener/gardener/pkg/utils/kubernetes"
 	"github.com/gardener/gardener/pkg/utils/managedresources"
@@ -80,7 +82,8 @@ type otelCollector struct {
 // Interface is the interface for the OpenTelemetry Collector deployer.
 type Interface interface {
 	component.DeployWaiter
-	// WithAuthenticationProxy acts as a setter for the WithRBACProxy field in Values.
+	// WithAuthenticationProxy acts as a setter for the WithRBACProxy field in Values
+
 	WithAuthenticationProxy(bool)
 }
 
@@ -322,13 +325,21 @@ func (o *otelCollector) openTelemetryCollector(namespace, lokiEndpoint, genericT
 			// Currently, there is no other way to define the annotations on the service other than adding them to the OpenTelemetryCollector resource.
 			// All annotations that exist here will be passed down to every resource that gets created by the OpenTelemetry Operator.
 			Annotations: map[string]string{
-				"networking.resources.gardener.cloud/from-all-scrape-targets-allowed-ports": fmt.Sprintf(`[{"protocol":"TCP","port":%d}]`, metricsPort),
+				v1alpha1.NetworkPolicyFromPolicyAnnotationPrefix +
+					v1beta1constants.LabelNetworkPolicyScrapeTargets +
+					v1alpha1.NetworkPolicyFromPolicyAnnotationSuffix: fmt.Sprintf(`[{"protocol":"TCP","port":%d}]`, metricsPort),
 			},
 		},
 		Spec: otelv1beta1.OpenTelemetryCollectorSpec{
 			Mode:            "deployment",
 			UpgradeStrategy: "none",
 			OpenTelemetryCommonFields: otelv1beta1.OpenTelemetryCommonFields{
+				Env: []corev1.EnvVar{
+					{
+						Name:      "POD_IP",
+						ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "status.podIP"}},
+					},
+				},
 				Image:             o.values.Image,
 				Replicas:          ptr.To(o.values.Replicas),
 				PriorityClassName: o.values.PriorityClassName,
@@ -349,7 +360,7 @@ func (o *otelCollector) openTelemetryCollector(namespace, lokiEndpoint, genericT
 						"otlp": map[string]any{
 							"protocols": map[string]any{
 								"grpc": map[string]any{
-									"endpoint": "127.0.0.1:" + strconv.Itoa(collectorconstants.PushPort),
+									"endpoint": "${env:POD_IP}:" + strconv.Itoa(collectorconstants.PushPort),
 								},
 							},
 						},
@@ -375,6 +386,11 @@ func (o *otelCollector) openTelemetryCollector(namespace, lokiEndpoint, genericT
 								map[string]any{
 									"key":            "container_name",
 									"from_attribute": "k8s.container.name",
+									"action":         "insert",
+								},
+								map[string]any{
+									"key":            "namespace_name",
+									"from_attribute": "k8s.namespace.name",
 									"action":         "insert",
 								},
 								map[string]any{
@@ -407,9 +423,14 @@ func (o *otelCollector) openTelemetryCollector(namespace, lokiEndpoint, genericT
 									"action":         "insert",
 								},
 								map[string]any{
-									"key":    "loki.resource.labels",
-									"value":  "job, unit, nodename, origin, pod_name, container_name, namespace_name, gardener_cloud_role",
-									"action": "insert",
+									"key":            "namespace_name",
+									"from_attribute": "k8s.namespace.name",
+									"action":         "insert",
+								},
+								map[string]any{
+									"key":    "loki.attribute.labels",
+									"value":  "priority, level, process.command, process.pid, host.name, host.id, service.name, service.namespace, job, unit, nodename, origin, pod_name, container_name, namespace_name, gardener_cloud_role",
+									"action": "upsert",
 								},
 								map[string]any{
 									"key":    "loki.format",
@@ -424,6 +445,13 @@ func (o *otelCollector) openTelemetryCollector(namespace, lokiEndpoint, genericT
 					Object: map[string]any{
 						"loki": map[string]any{
 							"endpoint": lokiEndpoint,
+							"default_labels_enabled": map[string]any{
+								"exporter": false,
+								"job":      false,
+							},
+						},
+						"debug/logs": map[string]any{
+							"verbosity": "basic",
 						},
 					},
 				},
@@ -437,7 +465,7 @@ func (o *otelCollector) openTelemetryCollector(namespace, lokiEndpoint, genericT
 										"pull": map[string]any{
 											"exporter": map[string]any{
 												"prometheus": map[string]any{
-													"host": "0.0.0.0",
+													"host": "${env:POD_IP}",
 													"port": metricsPort,
 												},
 											},
@@ -454,7 +482,7 @@ func (o *otelCollector) openTelemetryCollector(namespace, lokiEndpoint, genericT
 					Pipelines: map[string]*otelv1beta1.Pipeline{
 						"logs/vali": {
 							Exporters: []string{
-								"loki",
+								"loki", "debug/logs",
 							},
 							Receivers: []string{
 								"otlp",
@@ -469,6 +497,13 @@ func (o *otelCollector) openTelemetryCollector(namespace, lokiEndpoint, genericT
 				},
 			},
 		},
+	}
+
+	if namespace != v1beta1constants.GardenNamespace {
+		obj.Annotations = utils.MergeStringMaps(obj.Annotations, map[string]string{
+			v1alpha1.NetworkingPodLabelSelectorNamespaceAlias: v1beta1constants.LabelNetworkPolicyShootNamespaceAlias,
+			v1alpha1.NetworkingNamespaceSelectors:             `[{"matchLabels":{"kubernetes.io/metadata.name":"garden"}}]`,
+		})
 	}
 
 	if o.values.WithRBACProxy {
@@ -511,11 +546,17 @@ func (o *otelCollector) openTelemetryCollector(namespace, lokiEndpoint, genericT
 				},
 			},
 			{
+				Env: []corev1.EnvVar{
+					{
+						Name:      "POD_IP",
+						ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "status.podIP"}},
+					},
+				},
 				Name:  kubeRBACProxyName + "-otlp",
 				Image: o.values.KubeRBACProxyImage,
 				Args: []string{
 					fmt.Sprintf("--insecure-listen-address=0.0.0.0:%d", collectorconstants.KubeRBACProxyOTLPReceiverPort),
-					fmt.Sprintf("--upstream=http://127.0.0.1:%d/", collectorconstants.PushPort),
+					fmt.Sprintf("--upstream=http://$(POD_IP):%d/", collectorconstants.PushPort),
 					"--kubeconfig=" + gardenerutils.VolumeMountPathGenericKubeconfig + "/kubeconfig",
 					"--logtostderr=true",
 					// The OTLP exporter uses gRPC, which operates over HTTP/2. To support HTTP/2 over cleartext (h2c),
