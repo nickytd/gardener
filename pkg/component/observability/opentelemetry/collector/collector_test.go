@@ -213,11 +213,17 @@ var _ = Describe("OpenTelemetry Collector", func() {
 		}
 
 		kubeRBACProxyOTLPContainer = corev1.Container{
+			Env: []corev1.EnvVar{
+				{
+					Name:      "POD_IP",
+					ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "status.podIP"}},
+				},
+			},
 			Name:  "rbac-proxy-otlp",
 			Image: kubeRBACProxyImage,
 			Args: []string{
 				"--insecure-listen-address=[::]:8080",
-				"--upstream=http://127.0.0.1:4317/",
+				"--upstream=http://$(POD_IP):4317/",
 				"--kubeconfig=/var/run/secrets/gardener.cloud/shoot/generic-kubeconfig/kubeconfig",
 				"--logtostderr=true",
 				"--upstream-force-h2c",
@@ -323,7 +329,11 @@ var _ = Describe("OpenTelemetry Collector", func() {
 				Namespace: namespace,
 				Labels:    getLabels(),
 				Annotations: map[string]string{
-					`networking.resources.gardener.cloud/from-all-scrape-targets-allowed-ports`: `[{"protocol":"TCP","port":8888}]`,
+					resourcesv1alpha1.NetworkPolicyFromPolicyAnnotationPrefix +
+						v1beta1constants.LabelNetworkPolicyScrapeTargets +
+						resourcesv1alpha1.NetworkPolicyFromPolicyAnnotationSuffix: `[{"protocol":"TCP","port":8888}]`,
+					resourcesv1alpha1.NetworkingPodLabelSelectorNamespaceAlias: v1beta1constants.LabelNetworkPolicyShootNamespaceAlias,
+					resourcesv1alpha1.NetworkingNamespaceSelectors:             `[{"matchLabels":{"kubernetes.io/metadata.name":"garden"}}]`,
 				},
 			},
 			Spec: otelv1beta1.OpenTelemetryCollectorSpec{
@@ -335,6 +345,12 @@ var _ = Describe("OpenTelemetry Collector", func() {
 				Mode:            "deployment",
 				UpgradeStrategy: "none",
 				OpenTelemetryCommonFields: otelv1beta1.OpenTelemetryCommonFields{
+					Env: []corev1.EnvVar{
+						{
+							Name:      "POD_IP",
+							ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "status.podIP"}},
+						},
+					},
 					Image:             image,
 					Replicas:          ptr.To[int32](1),
 					PriorityClassName: "gardener-system-100",
@@ -355,7 +371,7 @@ var _ = Describe("OpenTelemetry Collector", func() {
 							"otlp": map[string]any{
 								"protocols": map[string]any{
 									"grpc": map[string]any{
-										"endpoint": "127.0.0.1:4317",
+										"endpoint": "${env:POD_IP}:4317",
 									},
 								},
 							},
@@ -381,6 +397,11 @@ var _ = Describe("OpenTelemetry Collector", func() {
 									map[string]any{
 										"key":            "container_name",
 										"from_attribute": "k8s.container.name",
+										"action":         "insert",
+									},
+									map[string]any{
+										"key":            "namespace_name",
+										"from_attribute": "k8s.namespace.name",
 										"action":         "insert",
 									},
 									map[string]any{
@@ -413,9 +434,14 @@ var _ = Describe("OpenTelemetry Collector", func() {
 										"action":         "insert",
 									},
 									map[string]any{
-										"key":    "loki.resource.labels",
-										"value":  "job, unit, nodename, origin, pod_name, container_name, namespace_name, gardener_cloud_role",
-										"action": "insert",
+										"key":            "namespace_name",
+										"from_attribute": "k8s.namespace.name",
+										"action":         "insert",
+									},
+									map[string]any{
+										"key":    "loki.attribute.labels",
+										"value":  "priority, level, process.command, process.pid, host.name, host.id, service.name, service.namespace, job, unit, nodename, origin, pod_name, container_name, namespace_name, gardener_cloud_role",
+										"action": "upsert",
 									},
 									map[string]any{
 										"key":    "loki.format",
@@ -430,6 +456,13 @@ var _ = Describe("OpenTelemetry Collector", func() {
 						Object: map[string]any{
 							"loki": map[string]any{
 								"endpoint": lokiEndpoint,
+								"default_labels_enabled": map[string]any{
+									"exporter": false,
+									"job":      false,
+								},
+							},
+							"debug/logs": map[string]any{
+								"verbosity": "basic",
 							},
 						},
 					},
@@ -443,7 +476,7 @@ var _ = Describe("OpenTelemetry Collector", func() {
 											"pull": map[string]any{
 												"exporter": map[string]any{
 													"prometheus": map[string]any{
-														"host": "[::]",
+														"host": "${env:POD_IP}",
 														// Field needs to be cast to `float64` due to an issue with serialization during tests.
 														// When fetching the object from the apiserver, since there's no type information regarding this field.
 														// the deserializer will interpret it as a `float64`. By setting the value to `float64` here, we ensure that
@@ -463,7 +496,7 @@ var _ = Describe("OpenTelemetry Collector", func() {
 						},
 						Pipelines: map[string]*otelv1beta1.Pipeline{
 							"logs/vali": {
-								Exporters:  []string{"loki"},
+								Exporters:  []string{"loki", "debug/logs"},
 								Receivers:  []string{"otlp"},
 								Processors: []string{"resource/vali", "attributes/vali", "batch"},
 							},
